@@ -1,33 +1,29 @@
-package CrazyE.world.DynamicEnvironment;
+package CrazyE.world.environment;
 
+import CrazyE.graphic.*;
 import arc.Events;
 import arc.func.Cons;
 import arc.math.Mathf;
 import arc.math.geom.*;
 import arc.struct.Seq;
-import arc.util.Log;
-import arc.util.Time;
-import arc.util.Tmp;
-import mindustry.game.Team;
-import mindustry.game.Teams;
+import arc.util.*;
+import mindustry.game.*;
 import mindustry.gen.Unit;
 import mindustry.io.SaveFileReader.*;
-import mindustry.world.Tiles;
 
-import java.io.DataInput;
-import java.io.DataOutput;
-import java.io.IOException;
+import java.io.*;
 
 import static java.lang.Math.*;
 import static mindustry.Vars.*;
 import static mindustry.game.EventType.*;
 import static mindustry.io.SaveVersion.addCustomChunk;
+import static CrazyE.graphic.CEMinimapRenderer.*;
 
-public class Gravity implements CustomChunk{
+public class Gravity implements CustomChunk, CEMinimapField {
     private static final double cons = cbrt(2),
             w1 = -(float)(cons/(2d - cons)),
             w2 = (float)(1d/(2d - cons));
-    private static final float c = 25f * tilesize / 60f, maxSpeed = 0.9f*c, csquared = c * c, G = 0.1f, k = 2f, timescale = 1/128f,
+    private static final float c = 15f * tilesize * tilesize / 60f, maxSpeed = 0.9f*c, csquared = c * c, G = 0.1f, k = 2f, stabilizer = 0.02f, timescale = 1/64f,
     c1 = (float)(0.5d*w2),
     c2 = (float)(0.5d*(w1+w2)),
     c3 = c2,
@@ -38,11 +34,12 @@ public class Gravity implements CustomChunk{
     d3 = (float)w2
     ;
 
+    private static final float drawRadius = 4f;
     private int sizeX, sizeY;
-    private GEMgrid PotentialField, vPotentialField, BufferField, CurrentField;
+    private GEMgrid PotentialField, vPotentialField, BufferField, CurrentField, EMGravityField;
     private boolean init = false;
 
-    String s = "";
+    String debug = "";
 
     public Gravity(){
         Events.on(WorldLoadEvent.class, e -> {
@@ -53,33 +50,140 @@ public class Gravity implements CustomChunk{
             vPotentialField = new GEMgrid(sizeY, sizeX);
             BufferField = new GEMgrid(sizeY, sizeX);
             CurrentField = new GEMgrid(sizeY, sizeX);
-
-            if(!init)Events.run(Trigger.beforeGameUpdate, this::update);
-            if(!init)Events.on(SaveWriteEvent.class, e2 -> Log.info(s));
+            EMGravityField = new GEMgrid(sizeY, sizeX);
             init = true;
         });
 
+        Events.run(Trigger.afterGameUpdate, this::update);
+
+        addField("Gravity", this);
         addCustomChunk("Gravity", this);
     }
 
+    public void EMGravity(){
+        float Ex, Ey, B;
+        for(int y=1; y<sizeY-1; y++){
+            for(int x=1; x<sizeX-1; x++){
+                Ex = -0.5f*(PotentialField.get(y, x + 1).x - PotentialField.get(y, x - 1).x);
+                Ey = -0.5f*(PotentialField.get(y + 1, x).x - PotentialField.get(y - 1, x).x);
+
+                Ex -= vPotentialField.get(y, x).y/c;
+                Ey -= vPotentialField.get(y, x).z/c;
+
+                B = 0.5f*(PotentialField.get(y, x + 1).z - PotentialField.get(y, x - 1).z)
+                        - 0.5f*(PotentialField.get(y + 1, x).y - PotentialField.get(y - 1, x).y);
+                EMGravityField.get(y, x).set(Ex, Ey, B);
+            }
+        }
+
+        for(int x=1; x<sizeX-1; x++){
+            Ex = -0.5f*(PotentialField.get(0, x + 1).x - PotentialField.get(0, x - 1).x);
+            Ey = -vPotentialField.get(0, x).x;
+
+            Ex -= vPotentialField.get(0, x).y/c;
+            Ey -= vPotentialField.get(0, x).z;
+
+            B = 0.5f*(PotentialField.get(0, x + 1).z - PotentialField.get(0, x - 1).z)
+                    - vPotentialField.get(0, x).y*c;
+
+            EMGravityField.get(0, x).set(Ex, Ey/c, B);
+
+            Ex = -0.5f*(PotentialField.get(sizeY-1, x + 1).x - PotentialField.get(sizeY-1, x - 1).x);
+            Ey = vPotentialField.get(sizeY-1, x).x;
+
+            Ex -= vPotentialField.get(sizeY-1, x).y/c;
+            Ey -= -vPotentialField.get(sizeY-1, x).z;
+
+            B = 0.5f*(PotentialField.get(sizeY-1, x + 1).z - PotentialField.get(sizeY-1, x - 1).z)
+                     + vPotentialField.get(sizeY-1, x).z/c;
+
+            EMGravityField.get(sizeY-1, x).set(Ex, Ey/c, B);
+        }
+
+        for(int y=1; y<sizeY-1; y++){
+            Ex = -vPotentialField.get(y, 0).x;
+            Ey = -0.5f*(PotentialField.get(y + 1, 0).x - PotentialField.get(y - 1, 0).x);
+
+            Ex -= vPotentialField.get(y, 0).y;
+            Ey -= vPotentialField.get(y, 0).z/c;
+
+            B = vPotentialField.get(y, 0).z/c -
+                    - 0.5f*(PotentialField.get(y + 1, 0).y - PotentialField.get(y - 1, 0).y);
+
+            EMGravityField.get(y, 0).set(Ex/c, Ey, B);
+
+            Ex = vPotentialField.get(y, 0).x;
+            Ey = -0.5f*(PotentialField.get(y + 1, 0).x - PotentialField.get(y - 1, 0).x);
+
+            Ex -= vPotentialField.get(y, 0).y;
+            Ey -= vPotentialField.get(y, 0).z/c;
+
+            B = -vPotentialField.get(y, 0).z/c -
+                    - 0.5f*(PotentialField.get(y + 1, 0).y - PotentialField.get(y - 1, 0).y);
+
+            EMGravityField.get(y, 0).set(Ex/c, Ey, B);
+        }
+
+        //Bottom-Left
+        Ey = Ex = -vPotentialField.get(0, 0).x;
+
+        Ex -= vPotentialField.get(0, 0).y;
+        Ey -= vPotentialField.get(0, 0).z;
+
+        B = vPotentialField.get(0,0).z
+                - vPotentialField.get(0, 0).y;
+
+        EMGravityField.get(0, 0).set(Ex, Ey, B).scl(1/c);
+
+        //Bottom-Right
+        Ex = vPotentialField.get(0, sizeX-1).x;
+        Ey = -Ex;
+
+        Ex -= vPotentialField.get(0, sizeX-1).y;
+        Ey -= vPotentialField.get(0, sizeX-1).z;
+
+        B = -vPotentialField.get(0,sizeX-1).z
+                - vPotentialField.get(0, sizeX-1).y;
+
+        EMGravityField.get(0, sizeX-1).set(Ex, Ey, B).scl(1/c);
+
+        //Top-Left
+        Ex = -vPotentialField.get(sizeY-1, 0).x;
+        Ey = -Ex;
+
+        Ex -= vPotentialField.get(sizeY-1, 0).y;
+        Ey -= vPotentialField.get(sizeY-1, 0).z;
+
+        B = vPotentialField.get(sizeY-1,0).z
+                + vPotentialField.get(sizeY-1, 0).y;
+
+        EMGravityField.get(sizeY-1, 0).set(Ex, Ey, B).scl(1/c);
+
+        //Top-Right
+        Ey = Ex = vPotentialField.get(sizeY-1, sizeX-1).x;
+
+        Ex -= vPotentialField.get(sizeY-1, sizeX-1).y;
+        Ey -= vPotentialField.get(sizeY-1, sizeX-1).z;
+
+        B = -vPotentialField.get(sizeY-1, sizeX-1).z
+                + vPotentialField.get(sizeY-1, sizeX-1).y;
+
+        EMGravityField.get(sizeY-1, sizeX-1).set(Ex, Ey, B).scl(1/c);
+    }
+
     public Vec2 Accel(int y, int x){
-        float Ex, Ey, B, xcomp = Tmp.v1.x, ycomp = Tmp.v1.y, xcomp2, ycomp2, dt = Time.delta*timescale;
+        Vec3 vF = EMGravityField.get(y, x);
+        float Ex = vF.x,
+              Ey = vF.y,
+              B  = vF.z,
+              xcomp = Tmp.v1.x, ycomp = Tmp.v1.y, xcomp2, ycomp2, dt = Time.delta*timescale;
 
-        Ex = -0.5f*(PotentialField.get(y, x + 1).x - PotentialField.get(y, x - 1).x);
-        Ey = -0.5f*(PotentialField.get(y + 1, x).x - PotentialField.get(y - 1, x).x);
+        xcomp += (Ex + k*B*Tmp.v1.y)*dt;
+        ycomp += (Ey - k*B*Tmp.v1.x)*dt;
 
-        Ex -= vPotentialField.get(y, x).y;
-        Ey -= vPotentialField.get(y, x).z;
-
-        B = 0.5f*(PotentialField.get(y, x + 1).z - PotentialField.get(y, x - 1).z)
-                - 0.5f*(PotentialField.get(y + 1, x).y - PotentialField.get(y - 1, x).y);
-
-        xcomp += (Ex + k*Tmp.v1.y*B)*dt;
-        ycomp += (Ey - k*Tmp.v1.x*B)*dt;
-
-        for(int i=0; i<7; i++){
-            xcomp2 = Tmp.v1.x + (Ex + 0.5f*k*(Tmp.v1.y + ycomp)*B)*dt;
-            ycomp2 = Tmp.v1.y + (Ey - 0.5f*k*(Tmp.v1.x + xcomp)*B)*dt;
+        for(int i=0; i<15; i++){
+            xcomp2 = Tmp.v1.x + (Ex + 0.5f*k*B*(Tmp.v1.y + ycomp)/c)*dt;
+            ycomp2 = Tmp.v1.y + (Ey - 0.5f*k*B*(Tmp.v1.x + xcomp)/c)*dt;
 
             xcomp = xcomp2; ycomp = ycomp2;
         }
@@ -88,6 +192,7 @@ public class Gravity implements CustomChunk{
     }
 
     public void update(){
+        if(world.isGenerating()) return;
         Teams.TeamData D;
         Seq<Unit> U;
         Unit u;
@@ -102,12 +207,12 @@ public class Gravity implements CustomChunk{
                 u = U.get(i);
                 x = u.x/tilesize;
                 y = u.y/tilesize;
-                if (x < 0.5f || x >= sizeX-0.5f || y < 0.5f || y >= sizeY-0.5f || Float.isNaN(x) || Float.isNaN(y)) continue;
+                ix = round(x); iy = round(y);
+                if (ix < 1 || ix >= sizeX || iy < 1 || iy >= sizeY || Float.isNaN(x) || Float.isNaN(y)) continue;
                 if(u.vel.len() >= maxSpeed) u.vel.setLength(maxSpeed);
                 Tmp.v1.set(u.vel);
 
-                m = G * u.mass() / Mathf.sqrt(1f - Tmp.v1.len2()/csquared);
-                ix = round(x); iy = round(y);
+                m = G * u.mass()/ tilesize / tilesize / Mathf.sqrt(1f - Tmp.v1.len2()/csquared);
                 w = x - ix; h = y - iy;
 
                 CurrentField.get(iy-1, ix-1).add(csquared * m, Tmp.v1.x * m * (0.5f-w)*(0.5f-h), Tmp.v1.y * m * (0.5f-w)*(0.5f-h));
@@ -121,21 +226,27 @@ public class Gravity implements CustomChunk{
 
         //Yoshida Integrator
 
-        PotentialField.addmul(vPotentialField, c1*dt);
-        BufferField.laplacian(PotentialField, vPotentialField).sub(CurrentField);
-        vPotentialField.addmul(BufferField, d1*dt);
+        BufferField.laplacian(PotentialField, vPotentialField).scl(stabilizer);
+        PotentialField.addmul(BufferField.add(vPotentialField), c1*dt);
+        BufferField.laplacian(PotentialField, vPotentialField);
+        vPotentialField.addmul(BufferField.sub(CurrentField), d1*dt);
 
-        PotentialField.addmul(vPotentialField, c2*dt);
-        BufferField.laplacian(PotentialField, vPotentialField).sub(CurrentField);
-        vPotentialField.addmul(BufferField, d2*dt);
+        BufferField.laplacian(PotentialField, vPotentialField).scl(stabilizer);
+        PotentialField.addmul(BufferField.add(vPotentialField), c2*dt);
+        BufferField.laplacian(PotentialField, vPotentialField);
+        vPotentialField.addmul(BufferField.sub(CurrentField), d2*dt);
 
-        PotentialField.addmul(vPotentialField, c3*dt);
-        BufferField.laplacian(PotentialField, vPotentialField).sub(CurrentField);
-        vPotentialField.addmul(BufferField, d3*dt);
+        BufferField.laplacian(PotentialField, vPotentialField).scl(stabilizer);
+        PotentialField.addmul(BufferField.add(vPotentialField), c3*dt);
+        BufferField.laplacian(PotentialField, vPotentialField);
+        vPotentialField.addmul(BufferField.sub(CurrentField), d3*dt);
 
-        PotentialField.addmul(vPotentialField, c4*dt);
+        BufferField.laplacian(PotentialField, vPotentialField).scl(stabilizer);
+        PotentialField.addmul(BufferField.add(vPotentialField), c4*dt);
 
-        PotentialField.normalize();
+        //PotentialField.normalize();
+
+        EMGravity();
 
         for (Team t : Team.all){
             D = t.data();
@@ -148,14 +259,25 @@ public class Gravity implements CustomChunk{
                 ix = round(x); iy = round(y);
                 w = x - ix; h = y - iy;
 
-                if (x < 1.5 || x >= sizeX - 1.5 || y < 1.5 || y >= sizeY - 1.5 || Float.isNaN(x) || Float.isNaN(y)) continue;
+                if (ix < 1 || ix >= sizeX || iy < 1 || iy >= sizeY || Float.isNaN(x) || Float.isNaN(y)) continue;
 
                 u.vel.add(Accel(iy - 1, ix - 1).scl((0.5f - w) * (0.5f - h)));
                 u.vel.add(Accel(iy - 1, ix).scl((0.5f + w) * (0.5f - h)));
                 u.vel.add(Accel(iy, ix - 1).scl((0.5f - w) * (0.5f + h)));
                 u.vel.add(Accel(iy, ix).scl((0.5f + w) * (0.5f + h)));
+
+                debug = debug.concat(u.vel.toString()).concat("\n");
             }
         }
+    }
+
+    @Override
+    public int color(int i, int j){
+        int color = 0xff, col = (int)(255f*Mathf.clamp(0.5f*EMGravityField.get(i, j).x/drawRadius + 0.5f));
+        color |= col << 8;
+        color |= col << 16;
+        color |= col << 24;
+        return color;
     }
 
     @Override
@@ -215,7 +337,7 @@ public class Gravity implements CustomChunk{
         });
     }
 
-    public static class GEMgrid {
+    public static class GEMgrid{
         private final Vec3[] grid;
         private final Vec3 buffer = new Vec3();
         public int sizeY, sizeX;
@@ -258,16 +380,16 @@ public class Gravity implements CustomChunk{
             }
 
             for (int i = 1; i < sizeY - 1; i++) { //X-edge
-                buffer.set(Bgrid.get(i, 0)).scl(2f / c);
-                get(i, 0).set(grid.get(i, 1)).scl(-4f)
+                buffer.set(Bgrid.get(i, 0)).scl(-2f / c);
+                get(i, 0).set(grid.get(i, 0)).scl(-4f)
                         .add(grid.get(i, 1))
                         .add(grid.get(i, 1))
                         .add(grid.get(i - 1, 0))
                         .add(grid.get(i + 1, 0))
                         .add(buffer).scl(csquared);
 
-                buffer.set(Bgrid.get(i, sizeX - 1)).scl(2f / c);
-                get(i, sizeX - 1).set(grid.get(i, sizeX - 2)).scl(-4f)
+                buffer.set(Bgrid.get(i, sizeX - 1)).scl(-2f / c);
+                get(i, sizeX - 1).set(grid.get(i, sizeX - 1)).scl(-4f)
                         .add(grid.get(i, sizeX - 2))
                         .add(grid.get(i, sizeX - 2))
                         .add(grid.get(i - 1, sizeX - 1))
@@ -277,16 +399,16 @@ public class Gravity implements CustomChunk{
 
 
             for (int j = 1; j < sizeX - 1; j++) { //Y-edge
-                buffer.set(Bgrid.get(0, j)).scl(2f / c);
-                get(0, j).set(grid.get(1, j)).scl(-4f)
+                buffer.set(Bgrid.get(0, j)).scl(-2f / c);
+                get(0, j).set(grid.get(0, j)).scl(-4f)
                         .add(grid.get(1, j))
                         .add(grid.get(1, j))
                         .add(grid.get(0, j - 1))
                         .add(grid.get(0, j + 1))
                         .add(buffer).scl(csquared);
 
-                buffer.set(Bgrid.get(sizeY - 1, j)).scl(2f / c);
-                get(sizeY - 1, j).set(grid.get(sizeY - 2, j)).scl(-4f)
+                buffer.set(Bgrid.get(sizeY - 1, j)).scl(-2f / c);
+                get(sizeY - 1, j).set(grid.get(sizeY - 1, j)).scl(-4f)
                         .add(grid.get(sizeY - 2, j))
                         .add(grid.get(sizeY - 2, j))
                         .add(grid.get(sizeY - 1, j - 1))
@@ -296,16 +418,16 @@ public class Gravity implements CustomChunk{
 
 
             //Bottom-left
-            get(0, 0).set(Bgrid.get(0, 0)).scl(1f / c).sub(grid.get(0, 0)).scl(2f)
+            get(0, 0).set(Bgrid.get(0, 0)).scl(-1f / c).sub(grid.get(0, 0)).scl(2f)
                     .add(grid.get(0, 1)).add(grid.get(1, 0)).scl(2f * csquared);
             //Bottom-right
-            get(0, sizeX - 1).set(Bgrid.get(0, sizeX - 1)).scl(1f / c).sub(grid.get(0, sizeX - 1)).scl(2f)
+            get(0, sizeX - 1).set(Bgrid.get(0, sizeX - 1)).scl(-1f / c).sub(grid.get(0, sizeX - 1)).scl(2f)
                     .add(grid.get(0, sizeX - 2)).add(grid.get(1, sizeX - 1)).scl(2f * csquared);
             //Top-left
-            get(sizeY - 1, 0).set(Bgrid.get(sizeY - 1, 0)).scl(1f / c).sub(grid.get(sizeY - 1, 0)).scl(2f)
+            get(sizeY - 1, 0).set(Bgrid.get(sizeY - 1, 0)).scl(-1f / c).sub(grid.get(sizeY - 1, 0)).scl(2f)
                     .add(grid.get(sizeY - 1, 1)).add(grid.get(sizeY - 2, 0)).scl(2f * csquared);
             //Top-right
-            get(sizeY - 1, sizeX - 1).set(Bgrid.get(sizeY - 1, sizeX - 1)).scl(1f / c).sub(grid.get(sizeY - 1, sizeX - 1)).scl(2f)
+            get(sizeY - 1, sizeX - 1).set(Bgrid.get(sizeY - 1, sizeX - 1)).scl(-1f / c).sub(grid.get(sizeY - 1, sizeX - 1)).scl(2f)
                     .add(grid.get(sizeY - 1, sizeX - 2)).add(grid.get(sizeY - 2, sizeX - 1)).scl(2f * csquared);
 
             return this;
@@ -351,6 +473,7 @@ public class Gravity implements CustomChunk{
             buffer.set(Vec3.Zero);
             final float scale = 1f/grid.length;
             eachTile(v -> buffer.add(v, scale));
+            sub(buffer);
             return this;
         }
 

@@ -29,7 +29,8 @@ public class CrazyEnvironment extends Mod{
             Field f = Renderer.class.getDeclaredField("minimap");
             f.setAccessible(true);
             f.set(renderer, new CEMinimapRenderer());
-            //ui.minimapfrag = new CEMinimapFragment();
+            ui.minimapfrag = new CEMinimapFragment();
+            ui.minimapfrag.build(ui.hudGroup);
         }catch(Exception e){
             throw new RuntimeException(e);
         }

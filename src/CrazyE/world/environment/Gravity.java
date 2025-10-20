@@ -22,7 +22,7 @@ public class Gravity implements CustomChunk, CEMinimapField{
     private static final double cons = cbrt(2),
             w1 = -(cons/(2d - cons)),
             w2 = (1d/(2d - cons));
-    private static final float c = 20f * tilesize * tilesize / 60f, maxSpeed = 0.9999f*c, csquared = c * c, G = 0.3f, ms = 4f, stabilizer = 1.1f, timescale = 1/32f,
+    private static final float c = 20f * tilesize * tilesize / 60f, maxSpeed = 0.9999f*c, csquared = c * c, G = 0.1f, ms = 4f, stabilizer = 1.1f, timescale = 1/32f,
     c1 = (float)(0.5d*w2),
     c2 = (float)(0.5d*(w1+w2)),
     c3 = c2,
@@ -31,11 +31,11 @@ public class Gravity implements CustomChunk, CEMinimapField{
     d1 = (float)w2,
     d2 = (float)w1,
     d3 = (float)w2,
-    drawRadius = 4f/c;
+    drawScale = 16f;
 
     private float dt, ac, b, b_inv;
     private int sizeX, sizeY;
-    private GEMgrid PotentialField, vPotentialField, vBuffer, BufferField, BufferField2, CurrentField, IntermediateField, EMGravityField;
+    private GEMgrid PotentialField, vPotentialField, vBuffer, BufferField, BufferField2, CurrentField, EMGravityField;
     private final float[] fm = new float[9];
     private float[] tridParam1, tridParam2;
     private Vec3[] tridResult;
@@ -44,26 +44,7 @@ public class Gravity implements CustomChunk, CEMinimapField{
 
     public Gravity(){
         Events.on(WorldLoadEvent.class, e -> {
-            if(state.rules.editor) return;
-            this.sizeX = GEMgrid.sizeX = world.width();
-            this.sizeY = GEMgrid.sizeY = world.height();
-
-            int maxSize = max(sizeX, sizeY);
-
-            this.tridParam1 = new float[maxSize];
-            this.tridParam2 = new float[maxSize];
-            this.tridResult = new Vec3[maxSize];
-            for(int i = 0; i < maxSize; i++){
-                tridResult[i] = new Vec3();
-            }
-            PotentialField = new GEMgrid();
-            vPotentialField = new GEMgrid();
-            vBuffer = new GEMgrid();
-            BufferField = new GEMgrid();
-            BufferField2 = new GEMgrid();
-            CurrentField = new GEMgrid();
-            IntermediateField = new GEMgrid();
-            EMGravityField = new GEMgrid();
+            reset();
         });
 
         Events.run(Trigger.beforeGameUpdate, () -> {
@@ -74,7 +55,7 @@ public class Gravity implements CustomChunk, CEMinimapField{
 
         Events.run(Trigger.afterGameUpdate, () -> {
             if(state.rules.editor) return;
-            dt = Mathf.clamp(Time.delta, 0, 1.5f)*timescale;
+            dt = Time.delta*timescale;//Mathf.clamp(Time.delta, 0, 1.5f)*timescale;
             ac = -0.25f*csquared*dt*dt; //in this tridiagonal matrix algorithm, a == c, so I put them together into one name
             b = 1f - 2f*ac;
             b_inv = 1f/b;
@@ -101,6 +82,27 @@ public class Gravity implements CustomChunk, CEMinimapField{
 
         addField("Gravity", this);
         addCustomChunk("Gravity", this);
+    }
+
+    public void reset(){
+        this.sizeX = GEMgrid.sizeX = world.width();
+        this.sizeY = GEMgrid.sizeY = world.height();
+
+        int maxSize = max(sizeX, sizeY);
+
+        this.tridParam1 = new float[maxSize];
+        this.tridParam2 = new float[maxSize];
+        this.tridResult = new Vec3[maxSize];
+        for(int i = 0; i < maxSize; i++){
+            tridResult[i] = new Vec3();
+        }
+        PotentialField = new GEMgrid();
+        vPotentialField = new GEMgrid();
+        vBuffer = new GEMgrid();
+        BufferField = new GEMgrid();
+        BufferField2 = new GEMgrid();
+        CurrentField = new GEMgrid();
+        EMGravityField = new GEMgrid();
     }
 
     public void EMGravity(){
@@ -301,46 +303,41 @@ public class Gravity implements CustomChunk, CEMinimapField{
     }
 
     public void ADI(){
-        BufferField.laplacian(PotentialField, vPotentialField).add(vPotentialField).sub(CurrentField).scl(0.25f*dt);
-
-        BufferField2.laplacianY(vPotentialField).scl(0.25f*dt*dt).add(BufferField);
+        BufferField.laplacian(PotentialField, vPotentialField).sub(CurrentField).scl(0.5f*dt);
+        BufferField2.laplacianY(vPotentialField).scl(0.25f*dt*dt);
+        vPotentialField.add(BufferField2).add(BufferField);
 
         for(int i=0; i<sizeY; i++){
-            tridiagonalSolver(Direction.x, i);
+            tridiagonalSolver(Direction.x, i, sizeX);
         }
 
-        BufferField2.laplacianX(vPotentialField).scl(0.25f*dt*dt).add(BufferField);
-
+        BufferField2.laplacianX(vPotentialField).scl(0.25f*dt*dt);
+        vPotentialField.add(BufferField2);
         for(int i=0; i<sizeX; i++){
-            tridiagonalSolver(Direction.y, i);
+            tridiagonalSolver(Direction.y, i, sizeY);
         }
     }
 
-    public void tridiagonalSolver(final Direction d, int pos){
-        int maxSize = switch(d){
-            case x -> sizeX;
-            case y -> sizeY;
-        };
-
+    public void tridiagonalSolver(final Direction d, int pos, final int maxSize){
         switch(d){
-            case x -> tridResult[0].set(BufferField2.get(pos, 0)).scl(b_inv);
-            case y -> tridResult[0].set(BufferField2.get(0, pos)).scl(b_inv);
+            case x -> tridResult[0].set(vPotentialField.get(pos, 0)).scl(b_inv);
+            case y -> tridResult[0].set(vPotentialField.get(0, pos)).scl(b_inv);
         }
 
         for(int i=1; i<maxSize; i++){
             switch(d){
                 case x -> tridResult[i].set(tridResult[i-1]).scl(-ac)
-                        .add(BufferField2.get(pos, i)).scl(tridParam2[i]);
+                        .add(vPotentialField.get(pos, i)).scl(tridParam2[i]);
                 case y -> tridResult[i].set(tridResult[i-1]).scl(-ac)
-                        .add(BufferField2.get(i, pos)).scl(tridParam2[i]);
+                        .add(vPotentialField.get(i, pos)).scl(tridParam2[i]);
             }
         }
 
         switch(d){
             case x -> tridResult[maxSize-1].set(tridResult[maxSize-2]).scl(-2*ac)
-                    .add(BufferField2.get(pos, maxSize-1)).scl(tridParam2[maxSize-1]);
+                    .add(vPotentialField.get(pos, maxSize-1)).scl(tridParam2[maxSize-1]);
             case y -> tridResult[maxSize-1].set(tridResult[maxSize-2]).scl(-2*ac)
-                    .add(BufferField2.get(maxSize-1, pos)).scl(tridParam2[maxSize-1]);
+                    .add(vPotentialField.get(maxSize-1, pos)).scl(tridParam2[maxSize-1]);
         }
 
         for(int i=maxSize-2; i>=0; i--){
@@ -349,8 +346,8 @@ public class Gravity implements CustomChunk, CEMinimapField{
 
         for(int i=0; i<maxSize; i++){
             switch(d){
-                case x: vPotentialField.get(pos, i).set(tridResult[i]);
-                case y: vPotentialField.get(i, pos).set(tridResult[i]);
+                case x: vBuffer.get(pos, i).set(tridResult[i]);
+                case y: vBuffer.get(i, pos).set(tridResult[i]);
             }
         }
     }
@@ -362,7 +359,6 @@ public class Gravity implements CustomChunk, CEMinimapField{
     public void updateFields(){
         vBuffer.set(vPotentialField);
         ADI();
-
         PotentialField.addmul(vBuffer.add(vPotentialField), 0.5f*dt);
 
         //Keep this one if the new one fail to work
@@ -391,25 +387,27 @@ public class Gravity implements CustomChunk, CEMinimapField{
         EMGravity();
 
         PotentialField.normalize();
-        //debug = debug.concat(EMGravityField.get(120, 100).toString()).concat("\n");
+        debug = debug.concat(sizeX + ", " + sizeY);
     }
 
     @Override
     public int color(int i, int j){
-        int color = 0xff, col = (int)(255f*Mathf.clamp(0.5f*EMGravityField.get(i, j).z/drawRadius + 0.5f));
-        color |= col << 8;
-        color |= col << 16;
+        float s = PotentialField.get(i, j).x;
+        s /= Mathf.sqrt(drawScale*drawScale + s*s);
+
+        int color = 0xff, col;
+
+        col = (int)(255f*Math.max(s, 0));
         color |= col << 24;
+
+        col = (int)(255f*Math.max(-s, 0));
+        color |= col << 8;
         return color;
     }
 
     @Override
     public void write(DataOutput write) throws IOException{
         if (PotentialField == null || vPotentialField == null) return;
-
-        write.writeInt(sizeX);
-        write.writeInt(sizeY);
-
         PotentialField.eachTile(v -> {
             try{
                 write.writeFloat(v.x);
@@ -432,8 +430,8 @@ public class Gravity implements CustomChunk, CEMinimapField{
 
     @Override
     public void read(DataInput read) throws IOException{
-        sizeX = GEMgrid.sizeX = read.readInt();
-        sizeY = GEMgrid.sizeY = read.readInt();
+        sizeX = GEMgrid.sizeX = world.width();
+        sizeY = GEMgrid.sizeY = world.height();
 
         PotentialField = new GEMgrid();
         vPotentialField = new GEMgrid();

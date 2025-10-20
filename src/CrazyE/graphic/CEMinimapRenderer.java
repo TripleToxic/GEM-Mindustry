@@ -19,7 +19,7 @@ public class CEMinimapRenderer extends MinimapRenderer{
     private CEMinimapField current;
     public boolean normalMinimap, isReset;
     public FieldType field = FieldType.Heatmap;
-    public String currentMap = "Gravity";
+    public String currentMap = "normal";
 
     public static final ObjectMap<String, CEMinimapField> fields = new ObjectMap<>();
 
